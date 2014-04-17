@@ -1,0 +1,23 @@
+{
+  "globals": {
+    "interval":3,
+    "debug":false,
+    "noexecute":true,
+    "comment":"Everything that is in this section will be exported as a global variable in the script, replacing if there's something to replace."
+  },
+  "exceptions": [
+    {"uuid":"ceb62844-7cc8-4dcc-8127-105253a081fc", "comment":"System boot partition"},
+    {"uuid":"6d1a8448-10c2-4d42-b8f6-ee790a849228", "comment":"System root partition"},
+    {"uuid":"9b0bb1fc-8720-4793-ab35-8a028a475d1e", "comment":"System swap partition"}
+  ],
+  "rules": [
+    {"uuid":"E02C8F0E2C8EDEC2", "mount":{"mountpoint":"/media/16G-DT100G2"}},
+    {"uuid":"7F22-AD64", "mount":{"mountpoint":"/media/16G-DT100G3"}},
+    {"uuid":"406C9EEE6C9EDE4A", "mount":{"mountpoint":"/media/80G-Music"}},
+    {"uuid":"52663FC01BD35EA4", "mount":{"mountpoint":"/media/32G-Data"}}
+  ],
+  "default": {
+    "mount":true,
+    "comment":"Configuration section for the actions that are taken if drive isn't in either exception or rule list."
+  }
+}
