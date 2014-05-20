@@ -1,1 +1,88 @@
-/etc/init.d/pautomount
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides: pautomount
+# Required-Start: $local_fs $syslog $remote_fs
+# Required-Stop: $local_fs $syslog $remote_fs
+# Should-Start:
+# Should-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: start and stop pautomount
+# Description: Fully configurable daemon for automount on hotplug
+### END INIT INFO
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+DAEMON=/usr/bin/pautomount
+PIDFILE=/run/pautomount.pid
+NAME=pautomount
+DESC="Python automount daemon"
+
+# use lsb-base
+. /lib/lsb/init-functions
+
+# abort if no executable exists
+test -x $DAEMON || exit 0
+
+set -e
+retval=0
+
+daemon_start () {
+	log_daemon_msg "Starting $DESC" "$NAME"
+	start-stop-daemon --start -q -b --make-pidfile --pidfile $PIDFILE --exec $DAEMON
+	log_end_msg $retval;
+}
+
+daemon_stop () {
+	log_daemon_msg "Stopping $DESC" "$NAME"
+        if ( pidofproc $DAEMON 2>&1 > /dev/null ) ; then
+                /bin/kill `cat $PIDFILE`
+        fi
+        log_end_msg $retval
+}
+
+daemon_reload () {
+	log_daemon_msg "Reloading $DESC" "$NAME"
+        if ( pidofproc $DAEMON 2>&1 > /dev/null ) ; then
+                /bin/kill -SIGHUP $(cat $PIDFILE)
+        else
+                log_failure_msg "$NAME not started, so not reloading"
+                retval=1
+        fi
+        log_end_msg $retval
+}
+
+daemon_status () {
+	log_daemon_msg "Checking status of $DESC" "$NAME"
+        retval=1
+        if ( pidofproc $DAEMON 2>&1 > /dev/null ) ; then
+                retval=0
+        fi
+        log_end_msg $retval
+}
+
+case "$1" in
+	start)
+		daemon_start
+	;;
+	stop)
+		daemon_stop
+	;;
+	reload)
+		daemon_reload
+	;;
+	status)
+		daemon_status
+	;;
+	force-reload|restart)
+		daemon_stop
+		daemon_start
+	;;
+	*)
+		N=/etc/init.d/$NAME
+		echo "Usage: $N {start|stop|reload|force-reload|restart|status}" >&2
+		retval=2
+	;;
+esac
+
+exit $retval
+
