@@ -19,14 +19,12 @@ Daemon is configured by changing entries in /etc/pautomount.conf file, a JSON fi
 Example:
 
   "exceptions": [
-  
     {"uuid":"ceb62844-7cc8-4dcc-8127-105253a081fc"},
     
     {"uuid":"6d1a8448-10c2-4d42-b8f6-ee790a849228"},
     
     {"uuid":"9b0bb1fc-8720-4793-ab35-8a028a475d1e"}
-    
-  ],
+ ],
   
 All partitions with UUIDs listed will not cause any action to be taken.
 
