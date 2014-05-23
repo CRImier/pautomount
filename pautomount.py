@@ -7,6 +7,7 @@ import subprocess #For calling external programs, such as "mount"
 import signal #For reloading daemon 
 import re #For "label-regex" option handling
 import sys #For stdout and stderr redirection
+import threading #For parallel partition processing
 
 config_file = "/etc/pautomount.conf"
 #Some globals
@@ -107,12 +108,6 @@ def compare(arr1, arr2):
                 detached.remove(dpartition)
     return attached, detached
 
-def execute_background(argument):
-    """This function is used for running external scripts and commands, making them as a background job."""
-    #The problem is that we don't know how much time it will take for an external script to run. 
-    #If we wait for the exit code and output as we do in execute(), daemon will freeze until the job is done.
-    pass
-
 def execute(*args):
     """Comfortable subprocess wrapper to call external programs"""
     if debug:
@@ -148,20 +143,23 @@ def complies_to_rule(partition, rule):
     #This function exists because we can have many different conditions when partition parameters apply to the rule
     #First one is when UUIDs match
     if "uuid" in rule.keys() and partition["uuid"] == rule["uuid"]:
-        log("Partition complies to UUID rule")
+        if debug:
+            log("Partition complies to UUID rule")
         return True
     #Latter two only apply if partition has a label
     elif "label" in partition.keys():
     #Second is when there's some label in the rule and it matches to the label of the partition
         if "label" in rule.keys() and partition["label"] == rule["label"]:
-            log("Partition complies to label rule")
+            if debug:
+                log("Partition complies to label rule")
             return True
         #Third is when the rule has option "label-regex" 
         #That means we take this regex, compile it and check
         elif "label_regex" in rule.keys():
             pattern = re.compile(rule["label_regex"])
             if pattern.match(partition["label"]):
-                log("Partition complies to label_regex rule")
+                if debug:
+                    log("Partition complies to label_regex rule")
                 return True
             else:
                 return False
@@ -204,7 +202,7 @@ def mount(partition, rule):
         log("Directory creation failed, path: "+mountpoint)
         raise Exception #Path creation failed - throw exception
     #Now kiss!^W^W^W^W execute!
-    log("Trying to mount partition "+partition["path"]+" on path "+mountpoint)
+    log("Trying to mount partition "+partition["uuid"]+"  on path "+mountpoint)
     command = "mount "+partition["path"]+" "+mountpoint+" -o "+options
     output = execute(command)
     if output[0] != 0:
@@ -212,7 +210,7 @@ def mount(partition, rule):
         log("Output: "+output[1])
         return None
     else:
-        log("Partition successfully mounted")
+        log("Partition "+partition["uuid"]+" successfully mounted")
         return mountpoint
 
 def execute_custom_script(script_path, part_info=None): #TODO
@@ -307,51 +305,58 @@ def main_loop():
     #We need to copy "current_partitions" into "previous_partitions" now
     #If current_partition is modified, it may lead to attempt to reattach partition in the next step
     #Start processing every attached drive
-    for partition in attached:
-        log("Processing attached drive with UUID "+partition["uuid"])
-        action_taken = False 
-        for exception in config["exceptions"]:
-            if complies_to_rule(partition, exception):
-                #Well, we don't need to do anything
-                #Other than
-                action_taken = True
-                if debug:
-                    log("Partition complies to exception rule: "+str(exception))
-                else:
-                    log("Partition complies to exception rule.")
-                break
-        for rule in config["rules"]:
-            if complies_to_rule(partition, rule) and action_taken == False:
-                #That should be the time to do what it says to!
-                mountpoint = None
-                if "mount" in rule.keys() and rule["mount"]:
-                    partition["mountpoint"] = mount(partition, rule)
-                if "command" in rule.keys() and rule["command"]:
-                    execute_custom_script(rule["command"])
-                if "script" in rule.keys() and rule["script"]:
-                    execute_custom_script(rule["script"], part_info=partition)
-                action_taken = True
-                if debug:
-                    log("Partition complies to rule: "+str(exception))
-                else:
-                    log("Partition complies to rule.")
-        if action_taken == False:
-            #And now for the defaults
-            log("No rule that suits this partition, taking actions set by default.")
-            default = config["default"]
-            if "mount" in default.keys() and default["mount"]:
-                partition["mountpoint"] = mount(partition, default)
-            if "command" in default.keys() and default["command"]:
-                execute_custom_script(default["command"])
-            if "script" in default.keys() and default["script"]:
-                execute_custom_script(default["script"], part_info=partition)
-        #That seems it, by this time action is already taken/exception is made.
+    for partition in attached: 
+        t = threading.Thread(target = process_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+        t.daemon = True
+        t.start()
     if super_debug:
         log(str(current_partitions))
     #Partition detach event handling not done yet, needs to be planned better
     if debug:
         log("Sleeping")
     pass
+
+def process_partition(*args, **kwargs):
+    partition = args[0]
+    log("Processing attached drive with UUID "+partition["uuid"])
+    action_taken = False 
+    for exception in config["exceptions"]:
+        if complies_to_rule(partition, exception):
+            #Well, we don't need to do anything
+            #Other than
+            action_taken = True
+            if debug:
+                log("Partition complies to exception rule: "+str(exception))
+            else:
+                log("Partition "+partition["uuid"]+" complies to exception rule.")
+            break
+    for rule in config["rules"]:
+        if complies_to_rule(partition, rule) and action_taken == False:
+            #That should be the time to do what it says to!
+            mountpoint = None
+            if "mount" in rule.keys() and rule["mount"]:
+                partition["mountpoint"] = mount(partition, rule)
+            if "command" in rule.keys() and rule["command"]:
+                execute_custom_script(rule["command"])
+            if "script" in rule.keys() and rule["script"]:
+                execute_custom_script(rule["script"], part_info=partition)
+            action_taken = True
+            if debug:
+                log("Partition complies to rule: "+str(exception))
+            else:
+                log("Partition "+partition["uuid"]+" complies to rule.")
+    if action_taken == False:
+        #And now for the defaults
+        log("No rule that suits this partition, taking actions set by default.")
+        default = config["default"]
+        if "mount" in default.keys() and default["mount"]:
+            partition["mountpoint"] = mount(partition, default)
+        if "command" in default.keys() and default["command"]:
+            execute_custom_script(default["command"])
+        if "script" in default.keys() and default["script"]:
+            execute_custom_script(default["script"], part_info=partition)
+    #That seems it, by this time action is already taken/exception is made.
+    return #No need in return value.
 
 def set_output():
     """This function looks for a certain command-line option presence and sets stdout and stderr accordingly."""
