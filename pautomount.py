@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 import time #For sleeping
 import datetime #For logging timestamps
 import os #For reading contents of directories, symlinks and similar
@@ -8,6 +9,7 @@ import signal #For reloading daemon
 import re #For "label-regex" option handling
 import sys #For stdout and stderr redirection
 import threading #For parallel partition processing
+from copy import deepcopy #For fixing a bug with copying 
 
 config_file = "/etc/pautomount.conf"
 #Some globals
@@ -22,6 +24,7 @@ debug = False #Makes output more verbose
 super_debug = False #MORE VERBOSE!
 interval = 3 #Interval between work cycles in seconds
 noexecute = False #Forbids executing things, logs command to be executed instead
+label_char_filter = True #Filters every disk label for every non-ascii character
 
 def log(data):
     """Writes data into a logfile adding a timestamp """
@@ -79,7 +82,9 @@ def scan_partitions():
     for label in parts_by_label:
         #Getting the place where symlink points to - that's the needed "/dev/sd**"
         path = os.path.realpath(os.path.join(dbl_dir, label)) 
-        labels[path] = label
+        label = label_filter(label)
+        if label:
+            labels[path] = label_filter(label)
         #Makes dict like {"/dev/sda1":"label1", "/dev/sdc1":"label2"}
     for uuid in parts_by_uuid:
         path = os.path.realpath(os.path.join(dbu_dir, uuid))
@@ -93,6 +98,24 @@ def scan_partitions():
         log("Partitions scanned. Current number of partitions: "+str(len(partitions)))
     return partitions
 
+def label_filter(label):
+    arr_label = [char for char in label]
+    ascii_letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ '
+    dang_chars = ["&", ";", "|", "/", "$"]
+    for char in dang_chars:
+        while char in arr_label[:]:
+            arr_label.remove(char)
+    if label_char_filter:
+        for char in arr_label[:]:
+            if char not in ascii_letters:
+                arr_label.remove(char)
+    #Now need to check if label is something reasonable =)
+    if not label or len(label)/len(arr_label) <= 2: #Label is now empty or more than half of label is lost after filtering
+        label = None
+    else:
+        label = "".join(arr_label)
+    return label
+
 def log_to_stdout(message):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print timestamp+"    "+str(message) 
@@ -101,11 +124,11 @@ def compare(arr1, arr2):
     """Compares two arrays - arr1 and arr2. Returns tuple (items that lack from arr2, items that lack from arr1)"""
     attached, detached = [item for item in arr1 if item not in arr2], [item for item in arr2 if item not in arr1]
     #Dirty bugfix - my misunderstanding of Python mutable and immutable structures doesn't allow me to fix the actual problem.
-    for apartition in attached[:]:
+    """for apartition in attached[:]:
         for dpartition in detached[:]:
             if dpartition["uuid"] == apartition["uuid"]:
                 attached.remove(apartition)
-                detached.remove(dpartition)
+                detached.remove(dpartition)"""
     return attached, detached
 
 def execute(*args):
@@ -293,6 +316,8 @@ def main_loop():
     global previous_partitions
     current_partitions = scan_partitions()
     attached, unplugged = compare(current_partitions, previous_partitions)
+    attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
+    unplugged = deepcopy(unplugged) #Preventing a bug in the future
     previous_partitions = current_partitions
     if attached:
         log("Found "+str(len(attached))+" attached partition(s)")
@@ -392,4 +417,3 @@ if __name__ == "__main__":
     while True:
         main_loop() #Starts daemon
         time.sleep(interval)
-
