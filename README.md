@@ -53,13 +53,15 @@ Example:
     {"uuid":"F2B827E2B827A3D7", "mount":true, "script":"/my/custom/script"}
 ```
 
-####3) "default" section. Is triggered where nothing else works. Usually consists of simple:
-
+####3) "default" section. 
+Is triggered where nothing else works. Usually consists of simple:
+```
 "mount":true 
+```
+Every drive not in "exceptions" or "rules" goes through this section. "uuid"/"label"/"label_regex" option in the "default" section is ignored, since it's not logical ;-) It can haz all the same action("mount"/"command"/"script") options as "rules", though.
 
-This means that every drive not in "exceptions" or "rules" goes through this section. "uuid"/"label"/"label_regex" option in the "default" section is ignored, since it's not logical ;-) It can haz all the same action options as "rules", though.
-
-4) "globals" section. Every variable there is exported to the daemon's global namespace. Useful variables are:
+####4) "globals" section. 
+Every variable there is exported to the daemon's global namespace. Useful variables are:
 
 - main_mount_dir - Main directory for mounting. Will be used only where directory for mounting is generated or directory path is relative. Has to be an absolute path. I recommend "/media", this is the default.
 
@@ -78,6 +80,7 @@ Miscellaneous globals:
 - noexecute - option that disables calling external commands pautomount relies on for mounting and other stuff you tell it to do. It is enabled in config and has to be there until pautomount is configured properly, so that no unwanted mounts appear =)
 
 - label_char_filter - turns on partition label filtering.
+
 By default, if partition has label and its UUID is not in rule list, it's mounted by "/media/$LABEL" (or whatever your main_mount_dir is)
 Partition labels, however, can contain any kind of Unicode symbols that are not necessarily correctly displayed by consoles
 So - there's label filtering, which leaves only ASCII letters in label
