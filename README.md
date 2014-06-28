@@ -1,20 +1,20 @@
-######pautomount
+##pautomount
 ==========
 
 ###Linux automount daemon written in Python.
 
-##What it does? 
+####What it does? 
 
 Automatically performs an action when a storage device is attached to Linux PC running the daemon. 
 Most common action is mounting this storage device, however, it can also call an external command or script.
 
-##How to install?
+####How to install?
 
 Download all the files and run "setup.sh". Ideally, it should put all the files where they belong. Then, edit "/etc/pautomount.conf", changing "exceptions" as described below, then removing a "noexecute" option from the "globals" section.
 
 Daemon is configured by changing entries in /etc/pautomount.conf file, a JSON file. It typically consists of four sections:
 
-#1) "exceptions" section.
+####1) "exceptions" section.
  There you'd certainly like to put UUIDs of the partitions that are mounted on boot with fstab. Otherwise, daemon will try to mount them on boot, too =)
 
 Example:
@@ -29,7 +29,7 @@ Example:
 ```  
 All partitions with UUIDs listed will not cause any action to be taken.
 
-#2) "rules" section.
+####2) "rules" section.
  Every entry there corresponds to a specific partition with a specific UUID ("uuid" key), but... You can also use labels ("label" key), potentially using one rule on a multiple partition with the same label. Additionally, you can use a regex which is checked using re.match ("label_regex" key)
 
 Every entry, subsequently, can have one or more actions.
@@ -41,7 +41,7 @@ Every entry, subsequently, can have one or more actions.
 - "script" action - causes pautomount to call a custom script with arguments .
 
 Example:
-
+```
     {"uuid":"E02C8F0E2C8EDEC2", "mount":true},
     
     {"uuid":"7F22-AD64", "mount":{"mountpoint":"/media/16G-DT100G3"}},
@@ -51,9 +51,9 @@ Example:
     {"uuid":"52663FC01BD35EA4", "command":"reboot", "comment":"HA-HA-HA"},
     
     {"uuid":"F2B827E2B827A3D7", "mount":true, "script":"/my/custom/script"}
+```
 
-
-3) "default" section. Is triggered where nothing else works. Usually consists of simple:
+####3) "default" section. Is triggered where nothing else works. Usually consists of simple:
 
 "mount":true 
 
