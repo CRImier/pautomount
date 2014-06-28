@@ -1,23 +1,24 @@
-******pautomount
+######pautomount
 ==========
 
-***Linux automount daemon written in Python.
+###Linux automount daemon written in Python.
 
-**What it does? 
+##What it does? 
 
 Automatically performs an action when a storage device is attached to Linux PC running the daemon. 
 Most common action is mounting this storage device, however, it can also call an external command or script.
 
-**How to install?
+##How to install?
 
 Download all the files and run "setup.sh". Ideally, it should put all the files where they belong. Then, edit "/etc/pautomount.conf", changing "exceptions" as described below, then removing a "noexecute" option from the "globals" section.
 
 Daemon is configured by changing entries in /etc/pautomount.conf file, a JSON file. It typically consists of four sections:
 
-1) "exceptions" section. There you'd certainly like to put UUIDs of the partitions that are mounted on boot with fstab. Otherwise, daemon will try to mount them on boot, too =)
+#1) "exceptions" section.
+ There you'd certainly like to put UUIDs of the partitions that are mounted on boot with fstab. Otherwise, daemon will try to mount them on boot, too =)
 
 Example:
-
+```
   "exceptions": [
     {"uuid":"ceb62844-7cc8-4dcc-8127-105253a081fc"},
     
@@ -25,10 +26,11 @@ Example:
     
     {"uuid":"9b0bb1fc-8720-4793-ab35-8a028a475d1e"}
  ],
-  
+```  
 All partitions with UUIDs listed will not cause any action to be taken.
 
-2) "rules" section. Every entry there corresponds to a specific partition with a specific UUID ("uuid" key), but... You can also use labels ("label" key), potentially using one rule on a multiple partition with the same label. Additionally, you can use a regex which is checked using re.match ("label_regex" key)
+#2) "rules" section.
+ Every entry there corresponds to a specific partition with a specific UUID ("uuid" key), but... You can also use labels ("label" key), potentially using one rule on a multiple partition with the same label. Additionally, you can use a regex which is checked using re.match ("label_regex" key)
 
 Every entry, subsequently, can have one or more actions.
 
