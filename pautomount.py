@@ -110,7 +110,7 @@ def label_filter(label):
             if char not in ascii_letters:
                 arr_label.remove(char)
     #Now need to check if label is something reasonable =)
-    if not label or len(label)/len(arr_label) <= 2: #Label is now empty or more than half of label is lost after filtering
+    if not arr_label or len(label)/len(arr_label) <= 2: #Label is now empty or more than half of label is lost after filtering
         label = None
     else:
         label = "".join(arr_label)
@@ -118,17 +118,11 @@ def label_filter(label):
 
 def log_to_stdout(message):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print timestamp+"    "+str(message) 
+    print timestamp+"    "+str(message)
     
 def compare(arr1, arr2):
     """Compares two arrays - arr1 and arr2. Returns tuple (items that lack from arr2, items that lack from arr1)"""
     attached, detached = [item for item in arr1 if item not in arr2], [item for item in arr2 if item not in arr1]
-    #Dirty bugfix - my misunderstanding of Python mutable and immutable structures doesn't allow me to fix the actual problem.
-    """for apartition in attached[:]:
-        for dpartition in detached[:]:
-            if dpartition["uuid"] == apartition["uuid"]:
-                attached.remove(apartition)
-                detached.remove(dpartition)"""
     return attached, detached
 
 def execute(*args):
@@ -191,39 +185,41 @@ def complies_to_rule(partition, rule):
     else:
         return False
 	
-def mount(partition, rule):
+def mount_wrapper(partition, mount_rule):
+    """Wrapper around mount(), takes care of "mount lists" function"""
+    #Could be possibly made as a decorator...
+    if type(mount_rule) != list:
+        mount_rule = [mount_rule]
+    else:
+        log("Received mount list with "+len(mount_rule)+"elements")
+    mountpoint = None
+    for rule in mount_rule:
+        result = mount(partition, rule)
+        if not mountpoint and result: #Mountpoint is not set, result of mount() is not negative
+            #First mountpoint which is used is to be returned by mount_wrapper() as a mountpoint 
+            mountpoint = result
+    return mountpoint
+
+def mount(partition, mount_rule):
     """Mount function, wrapper around execute()"""
-    #rule["mount"] is true - we wouldn't have gotten here if it wasn't.
-    #Now we need to see if the rule["mount"] is a dictionary or a list, or just a boolean True.
-    #In the second case, there are many things for us to do. 
-    #Have to somehow unify these three cases... Hmm.
-    #TODO - finish this change and finally unify this. 
-    if type(rule["mount"]) == dict:
-        rule["mount"] = rule["mount"] #Nothing to be changed yet, but after I'll be wrapping everything in lists
-    elif type(rule["mount"]) == bool:
-        rule["mount"] = {"mount":True}
-    # Lists as config options to mount are not supported yet but support is to be added.
-    #This would require some refactoring, though. 
-    #I guess I'll have to add another functiion caring for lists.
-    """elif type(rule["mount"]) == list:
-        for mount_rule in rule["mount"]:
-            if type(mount_rule[""]) == bool:
-               if type["rule"] - to be continued"""
-    #Main task for now is parsing partition dictionary and guessing mount path and options
-    if "mountpoint" not in rule["mount"].keys():
+    if not mount_rule:
+        return None #Don't need to react at all
+    #log(mount_rule.keys())
+    if type(mount_rule) != dict or "mountpoint" not in mount_rule.keys():
         mountpoint = generate_mountpoint(partition)
     else:
-        mountpoint = rule["mount"]["mountpoint"]
+        mountpoint = mount_rule["mountpoint"]
         mountpoint = return_absolute_mountpoint(mountpoint)
-    if "options" not in rule.keys() and rule["mount"]:
+    if type(mount_rule) != dict or "options" not in mount_rule.keys():
         options = default_mount_option
     else:     
-        options = rule["options"]
+        options = mount_rule["options"]
     try:
         ensure_path_exists(mountpoint)
     except:
         log("Directory creation failed, path: "+mountpoint)
-        raise Exception #Path creation failed - throw exception
+        raise Exception #Path creation failed - throw exception...
+        #TODO - change exception type
     #Now kiss!^W^W^W^W execute!
     log("Trying to mount partition "+partition["uuid"]+"  on path "+mountpoint)
     command = "mount "+partition["path"]+" "+mountpoint+" -o "+options
@@ -236,7 +232,14 @@ def mount(partition, rule):
         log("Partition "+partition["uuid"]+" successfully mounted")
         return mountpoint
 
-def execute_custom_script(script_path, part_info=None): #TODO
+def execute_script_wrapper(script_path, part_info=None):
+    #script_path might as well be list, so we need to make a workaround here
+    if type(script_path) != list:
+        rule["mount"] = list([script_path])
+    for script in script_path:
+        execute_custom_script(script, part_info=part_info)
+
+def execute_custom_script(script_path, part_info=None):
     """Function to execute arbitrary script - main function is to arrange arguments in a correct order"""
     #First of all, there are two ways to call this function.
     #If you don't supply part_info, it just calls some command without options
@@ -245,18 +248,16 @@ def execute_custom_script(script_path, part_info=None): #TODO
     #Okay, we have some arguments and options
     #Arguments are partition's block device path and uuid
     #Options are... Mountpoint and label, for example.  Can't think of many now. 
-    
-    #TODO: Find a way to run the said script in background.
     if part_info:
         device = part_info["path"]
         uuid = part_info["uuid"]
         if "mountpoint" in part_info.keys():
-            mountpoint = part_info["mountpoint"]
+            mountpoint = part_info["mountpoint"] #Might need to be escaped as may contain spaces and so on
         else:
             mountpoint = "None"
         uuid = part_info["uuid"]
         if "label" in part_info.keys():
-            label = part_info["label"]
+            label = part_info["label"] #Might need to be escaped as well
         else:
             label = "None"
         #Script will be called like '/path/to/script /dev/sda1 U1U2-I3D4 /media/4GB-Flash Flashdrive'
@@ -305,7 +306,7 @@ def generate_mountpoint(part_info):
     #CAN'T HANDLE THAT
     #Seriously, is that even possible?
     #Okay, I've seen some flash drives that have really short UUIDs
-    #So collision could be possible. Anyway, shit happens. Let's add a solution just in case: 
+    #And seen UUID collisions in my script when cloned drives
     else:
         counter = 1
         while os.path.exists(path_from_uuid+"_("+str(counter)+")"):
@@ -315,33 +316,38 @@ def generate_mountpoint(part_info):
 def main_loop():
     global previous_partitions
     current_partitions = scan_partitions()
-    attached, unplugged = compare(current_partitions, previous_partitions)
+    attached, detached = compare(current_partitions, previous_partitions)
     attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
-    unplugged = deepcopy(unplugged) #Preventing a bug in the future
+    detached = deepcopy(detached) #Preventing a bug in the future
     previous_partitions = current_partitions
     if attached:
         log("Found "+str(len(attached))+" attached partition(s)")
         if debug:
             log(str(attached))
-    if unplugged:
-        log("Found "+str(len(unplugged))+" detached partition(s)")
+    if detached:
+        log("Found "+str(len(detached))+" detached partition(s)")
         if debug:
-            log(str(unplugged))
+            log(str(detached))
     #We need to copy "current_partitions" into "previous_partitions" now
     #If current_partition is modified, it may lead to attempt to reattach partition in the next step
     #Start processing every attached drive
     for partition in attached: 
-        t = threading.Thread(target = process_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+        t = threading.Thread(target = process_attached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
         t.daemon = True
         t.start()
+    for partition in detached:
+        #TODO - make some kind of path-UUID-mountpoint database so that we can at least do umount --fake on detached partitions and delete mount directories
+        #t = threading.Thread(target = process_detached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+        #t.daemon = True
+        #t.start()
+        pass
     if super_debug:
         log(str(current_partitions))
-    #Partition detach event handling not done yet, needs to be planned better
     if debug:
-        log("Sleeping")
+        log("Sleeping...")
     pass
 
-def process_partition(*args, **kwargs):
+def process_attached_partition(*args, **kwargs):
     partition = args[0]
     log("Processing attached drive with UUID "+partition["uuid"])
     action_taken = False 
@@ -360,14 +366,14 @@ def process_partition(*args, **kwargs):
             #That should be the time to do what it says to!
             mountpoint = None
             if "mount" in rule.keys() and rule["mount"]:
-                partition["mountpoint"] = mount(partition, rule)
+                partition["mountpoint"] = mount_wrapper(partition, rule["mount"])
             if "command" in rule.keys() and rule["command"]:
-                execute_custom_script(rule["command"])
+                execute_script_wrapper(rule["command"])
             if "script" in rule.keys() and rule["script"]:
-                execute_custom_script(rule["script"], part_info=partition)
+                execute_script_wrapper(rule["script"], part_info=partition)
             action_taken = True
             if debug:
-                log("Partition complies to rule: "+str(exception))
+                log("Partition complies to rule: "+str(rule))
             else:
                 log("Partition "+partition["uuid"]+" complies to rule.")
     if action_taken == False:
@@ -375,11 +381,11 @@ def process_partition(*args, **kwargs):
         log("No rule that suits this partition, taking actions set by default.")
         default = config["default"]
         if "mount" in default.keys() and default["mount"]:
-            partition["mountpoint"] = mount(partition, default)
+            partition["mountpoint"] = mount_wrapper(partition, default["mount"])
         if "command" in default.keys() and default["command"]:
-            execute_custom_script(default["command"])
+            execute_script_wrapper(default["command"])
         if "script" in default.keys() and default["script"]:
-            execute_custom_script(default["script"], part_info=partition)
+            execute_script_wrapper(default["script"], part_info=partition)
     #That seems it, by this time action is already taken/exception is made.
     return #No need in return value.
 
