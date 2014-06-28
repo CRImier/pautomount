@@ -1,14 +1,14 @@
-pautomount
+******pautomount
 ==========
 
-Linux automount daemon written in Python.
+***Linux automount daemon written in Python.
 
-What it does? 
+**What it does? 
 
 Automatically performs an action when a storage device is attached to Linux PC running the daemon. 
 Most common action is mounting this storage device, however, it can also call an external command or script.
 
-How to install?
+**How to install?
 
 Download all the files and run "setup.sh". Ideally, it should put all the files where they belong. Then, edit "/etc/pautomount.conf", changing "exceptions" as described below, then removing a "noexecute" option from the "globals" section.
 
@@ -32,11 +32,11 @@ All partitions with UUIDs listed will not cause any action to be taken.
 
 Every entry, subsequently, can have one or more actions.
 
-"mount" action - causes partition to be mounted, and allows for some additional options controlling everything.
+- "mount" action - causes partition to be mounted, and allows for some additional options controlling everything.
 
-"command" action - causes pautomount to call an external command. 
+- "command" action - causes pautomount to call an external command. 
 
-"script" action - causes pautomount to call a custom script with arguments .
+- "script" action - causes pautomount to call a custom script with arguments .
 
 Example:
 
@@ -59,32 +59,39 @@ This means that every drive not in "exceptions" or "rules" goes through this sec
 
 4) "globals" section. Every variable there is exported to the daemon's global namespace. Useful variables are:
 
-main_mount_dir - Main directory for mounting. Will be used only where directory for mounting is generated or directory path is relative. Has to be an absolute path. I recommend "/media", this is the default.
+- main_mount_dir - Main directory for mounting. Will be used only where directory for mounting is generated or directory path is relative. Has to be an absolute path. I recommend "/media", this is the default.
 
-default_mount_option - Default mounting options. I recommend "rw", even though I'm not sure - it might be a default in actual "mount" command for most filesystem types. You can also add something about "uid" and "gid" there, to allow ordinary user read-write access to the folders.
+- default_mount_option - Default mounting options. I recommend "rw", even though I'm not sure - it might be a default in actual "mount" command for most filesystem types. You can also add something about "uid" and "gid" there, to allow ordinary user read-write access to the folders.
 
-logfile - Path to logfile. Has to be absolute, otherwise I do not respond for where your logs might land =)
+- logfile - Path to logfile. Has to be absolute, otherwise I do not respond for where your logs might land =)
 
-interval - Integer, which represents number of seconds between each pautomount cycle. If pautomount somehow happens to load the CPU - just lower that. Even though - this has hardly ever been a problem for me on my single-core 900MHz ;-)
+- interval - Integer, which represents number of seconds between each pautomount cycle. If pautomount somehow happens to load the CPU - just lower that. Even though - this has hardly ever been a problem for me on my single-core 900MHz ;-)
 
 Miscellaneous globals:
 
-debug - this option's name speaks for itself. Makes logging more verbose - and makes logs grow faster. You'll hardly need that.
+- debug - this option's name speaks for itself. Makes logging more verbose - and makes logs grow faster. You'll hardly need that.
 
-super_debug - this option makes logging even more verbose. You'll hardly need that, too.
+- super_debug - this option makes logging even more verbose. You'll hardly need that, too.
 
-noexecute - option that disables calling external commands pautomount relies on for mounting and other stuff you tell it to do. It is enabled in config and has to be there until pautomount is configured properly, so that no unwanted mounts appear =)
+- noexecute - option that disables calling external commands pautomount relies on for mounting and other stuff you tell it to do. It is enabled in config and has to be there until pautomount is configured properly, so that no unwanted mounts appear =)
+
+- label_char_filter - turns on partition label filtering.
+By default, if partition has label and its UUID is not in rule list, it's mounted by "/media/$LABEL" (or whatever your main_mount_dir is)
+Partition labels, however, can contain any kind of Unicode symbols that are not necessarily correctly displayed by consoles
+So - there's label filtering, which leaves only ASCII letters in label
+By default it's set to True
 
 ----------------------------------------------------
 More about actions:
 
 "mount" action: uses "mount" external command. You currently can either set is as true (meaning that drive has to be mounted) or false (meaning that the drive shouldn't be mounted), or set it as a dictionary of additional options - in this case, "true" is assumed. 
+You can also set mount as list - for example, 
+    "mount":[{"mountpoint":"/media/ExternalDisk"}, {"mountpoint":"/media/SecondLocation"}]
+Please keep in mind that multiple mounts of the same block device are not supported by, for example, NTFS drivers.
 
 Additional options might be:
 
 "options" - Options for "mount" command, used like "-o $OPTIONS". Hint - you can put spaces in it and imitate some more 
-"mount" options, like "--fake" or "--bind", even though latter won't be supported yet.
-
 "mountpoint" - Fixed mountpoint for "mount" command. I like using this option - it's really convenient =)
 
 I might add support of more options later if requested.
@@ -92,19 +99,23 @@ I might add support of more options later if requested.
 
 "command" action just runs a command as it is. For example, entry:
 
-"command":"rm -rf /" 
+    "command":"rm -rf /" 
 
 will run "rm -rf /"
+
+This option also supports lists, for example:
+    "command":["logger 'OK'", "mount --bind /media/USBdrive /media/bind_mount_destination", "logger 'Mounted'"]
 
 "script" action - causes pautomount to call a custom script. Script is called like "/path/to/script DEVICE_PATH UUID MOUNTPOINT LABEL". If LABEL or MOUNTPOINT do not exist (partition not mounted or has no label), "None" is used instead. 
 So, possible script calls are:
 
-/path/to/script /dev/sda1 U1U2-I3D4 /media/4GB-Flash Flashdrive
+    /path/to/script /dev/sda1 U1U2-I3D4 /media/4GB-Flash Flashdrive
 
 or
 
-/path/to/script /dev/sda1 U1U2-I3D4 None None
+    /path/to/script /dev/sda1 U1U2-I3D4 None None
 
+This also supports lists, just like two options above
 
 Minimal system requirements:
 
@@ -131,16 +142,13 @@ AC97-compatible soundcard, speakers
 
 Tips for debugging:
 
-To read logs as they are created, use "tail -f /var/log/pautomount.log". Also, don't forget to set "debug" in /etc/pautomount.conf !
+To read logs as they are created, use "tail -f /var/log/pautomount.log". Also, don't forget to set "debug" in /etc/pautomount.conf ! 
+
+There's a Python thread created for each attached partition. This is to prevent pautomount freezes when there's a stubborn partition that doesn't want to be mounted automatically. But that means log messages are not necessarily in the correct order - series of log messages about different partitions can overlap and mix together.
+
 
 Known bugs to be fixed and features that have to be added:
 
 No automatic parsing of "/etc/fstab" to determine which drives should be listed as exceptions, user has to do it manually by now.
 
-I plan on adding support of action lists, that means - calling many actions of the same action type, such as "mount", "command" or "script". That'd look like this:
-
-{"uuid":"7F22-AD64", "mount":"true", "command":["'/do/antivirus/check, '/add/samba/share', '/notify/by/voice'"]}
-
 No support of "mount --bind", even though I'm not sure that's needed since it doesn't really fit in the design and can easily be added via "script" option.
-
-There's currently no background execution of scripts. I ran into a design trouble while implementing this, will be postponed for some time until I develop a workaround - it'll certainly be needed =)
