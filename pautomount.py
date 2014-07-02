@@ -16,6 +16,7 @@ config_file = "/etc/pautomount.conf"
 #Some globals
 config = {}
 previous_partitions = []
+processed_partitions = []
 #These variables are those that affect the work of the daemon. They have default values now,
 #but those are overridden by values in the config file.
 main_mount_dir = "/media/" #Main directory for relative mountpoints in config and generating mountpoints
@@ -26,7 +27,6 @@ super_debug = False #MORE VERBOSE!
 interval = 3 #Interval between work cycles in seconds
 noexecute = False #Forbids executing things, logs command to be executed instead
 label_char_filter = True #Filters every disk label for every non-ascii character
-
 
 def log(data):
     """Writes data into a logfile adding a timestamp """
@@ -145,6 +145,17 @@ def execute(*args):
             log("Exit code: "+str(result[0])+", output: "+result[1])
     return result
 
+def add_processed_partition_entry(part_info, rule):
+    #This function adds data to processed_partitions dictionary
+    #Useful mainly on ejects for getting knowledge which directory to `umount`
+    global processed_partitions
+    part_info = deepcopy(part_info) #Who knows, maybe this is exactly a place for a bug I've fought with before
+    if "umount" in rule.keys(): #Saving umount action for later
+        part_info["umount"] = rule["umount"]
+    else:
+        part_info["umount"] = None
+    processed_partitions.append(part_info)    
+    
 def mark_mounted_partitions(current_entries):
     #Good source of information about mounted partitions is /etc/mtab
     file = "/etc/mtab" 
@@ -265,7 +276,7 @@ def mount(partition, mount_rule):
 def execute_script_wrapper(script_path, part_info=None):
     #script_path might as well be list, so we need to make a workaround here
     if type(script_path) != list:
-        rule["mount"] = list([script_path])
+        script_path = list([script_path])
     for script in script_path:
         execute_custom_script(script, part_info=part_info)
 
@@ -370,10 +381,9 @@ def main_loop():
         t.daemon = True
         t.start()
     for partition in detached:
-        #TODO - make some kind of path-UUID-mountpoint database so that we can at least do umount --fake on detached partitions and delete mount directories
-        #t = threading.Thread(target = process_detached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
-        #t.daemon = True
-        #t.start()
+        t = threading.Thread(target = process_detached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+        t.daemon = True
+        t.start()
         pass
     if super_debug:
         log(str(current_partitions))
@@ -397,14 +407,14 @@ def process_attached_partition(*args, **kwargs):
             break
     for rule in config["rules"]:
         if complies_to_rule(partition, rule) and action_taken == False:
-            #That should be the time to do what it says to!
-            mountpoint = None
+            partition["mountpoint"] = None
             if "mount" in rule.keys() and rule["mount"]:
                 partition["mountpoint"] = mount_wrapper(partition, rule["mount"])
             if "command" in rule.keys() and rule["command"]:
                 execute_script_wrapper(rule["command"])
             if "script" in rule.keys() and rule["script"]:
                 execute_script_wrapper(rule["script"], part_info=partition)
+            add_processed_partition_entry(partition, rule)
             action_taken = True
             if debug:
                 log("Partition complies to rule: "+str(rule))
@@ -414,14 +424,32 @@ def process_attached_partition(*args, **kwargs):
         #And now for the defaults
         log("No rule that suits this partition, taking actions set by default.")
         default = config["default"]
+        partition["mountpoint"] = None
         if "mount" in default.keys() and default["mount"]:
             partition["mountpoint"] = mount_wrapper(partition, default["mount"])
         if "command" in default.keys() and default["command"]:
             execute_script_wrapper(default["command"])
         if "script" in default.keys() and default["script"]:
             execute_script_wrapper(default["script"], part_info=partition)
+        add_processed_partition_entry(partition, default)
     #That seems it, by this time action is already taken/exception is made.
     return #No need in return value.
+
+def process_detached_partition(*args, **kwargs):
+    part_info = args[0]
+    log("Processing detached drive with UUID "+part_info["uuid"])
+    for partition in processed_partitions:
+         if partition["uuid"] == part_info["uuid"]:
+             if "umount"in partition.keys() and partition["umount"]:
+                 #The same command list support, just executing all the commands one by one
+                 execute_script_wrapper(partition["umount"])
+             if "mountpoint" in partition.keys() and partition["mountpoint"]:
+                 #Unmounting the mountpoint where device was mounted - just in case
+                 exit_status = 0
+                 while exit_status == 0:
+                     exit_status = execute("umount "+partition["mountpoint"]+"")[0]
+         else:
+             continue
 
 def set_output():
     """This function looks for a certain command-line option presence and sets stdout and stderr accordingly."""
