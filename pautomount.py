@@ -10,6 +10,7 @@ import re #For "label-regex" option handling
 import sys #For stdout and stderr redirection
 import threading #For parallel partition processing
 from copy import deepcopy #For fixing a bug with copying 
+import shlex #For fstab/mtab/whatever parsing
 
 config_file = "/etc/pautomount.conf"
 #Some globals
@@ -25,6 +26,7 @@ super_debug = False #MORE VERBOSE!
 interval = 3 #Interval between work cycles in seconds
 noexecute = False #Forbids executing things, logs command to be executed instead
 label_char_filter = True #Filters every disk label for every non-ascii character
+
 
 def log(data):
     """Writes data into a logfile adding a timestamp """
@@ -47,7 +49,7 @@ def normalize_config(config):
     #Well, an empty file with curly braces should do. But Python has its own way of handling a try to get a value from a dict by a non-existent key.
     #Precisely, it returns an exception, and to catch this, we need to wrap in try:except many blocks.
     #I think that the most efficient way is adding the basic keys (config, exceptions, rules and default section) if they don't exist in the actual dictionary. 
-    #Everything else is already handled by all the other functions.
+    #Checking everything else is already handled by all the other functions.
     categories = {"globals":{}, "exceptions":[], "rules":[], "default":{}}
     for category in categories.keys():  
         if category not in config.keys():
@@ -110,7 +112,7 @@ def label_filter(label):
             if char not in ascii_letters:
                 arr_label.remove(char)
     #Now need to check if label is something reasonable =)
-    if not arr_label or len(label)/len(arr_label) <= 2: #Label is now empty or more than half of label is lost after filtering
+    if not arr_label or len(label)/len(arr_label) <= 2: #Label after filtering is empty or more than half of label is lost after filtering
         label = None
     else:
         label = "".join(arr_label)
@@ -130,6 +132,7 @@ def execute(*args):
     if debug:
         log("Executing: "+str(args))
     if noexecute: 
+        log("'noexecute' turned on, not doing anything, arguments:")
         log(str(args))
         result = [0, ""] #Totally faking it
     else:
@@ -141,6 +144,33 @@ def execute(*args):
         if debug:    
             log("Exit code: "+str(result[0])+", output: "+result[1])
     return result
+
+def mark_mounted_partitions(current_entries):
+    #Good source of information about mounted partitions is /etc/mtab
+    file = "/etc/mtab" 
+    f = open(file, "r")
+    lines = f.readlines()
+    f.close()
+    mounted_partitions = []
+    for line in lines:
+        line = line.strip().strip("\n")
+        if line: #Empty lines? Well, who knows what happens... =)
+            elements = shlex.split(line) #Avoids splitting where space character is enclosed in ###########
+            if len(elements) != 6:
+                break
+            path = elements[0] 
+            #mtab is full of entries that aren't any kind of partitions we're interested in - that is, physical&logical partitions of disk drives
+            #That's why we need to filter entries by path
+            if path.startswith("/dev"):
+                #Seems to be a legit disk device. It's either /dev/sd** or a symlink to that. If it's a symlink, we resolve it.
+                dev_path = os.path.realpath(path)
+                mounted_partitions.append(dev_path)
+    for entry in current_entries:
+         if entry["path"] in mounted_partitions:
+             entry["mounted"] = True
+         else:
+             entry["mounted"] = False
+    return current_entries
 
 def read_config():
     try:
@@ -319,6 +349,8 @@ def main_loop():
     attached, detached = compare(current_partitions, previous_partitions)
     attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
     detached = deepcopy(detached) #Preventing a bug in the future
+    #We need to copy "current_partitions" into "previous_partitions" now
+    #If current_partition is modified, it may lead to attempt to reattach partition in the next step
     previous_partitions = current_partitions
     if attached:
         log("Found "+str(len(attached))+" attached partition(s)")
@@ -328,10 +360,12 @@ def main_loop():
         log("Found "+str(len(detached))+" detached partition(s)")
         if debug:
             log(str(detached))
-    #We need to copy "current_partitions" into "previous_partitions" now
-    #If current_partition is modified, it may lead to attempt to reattach partition in the next step
     #Start processing every attached drive
+    attached = mark_mounted_partitions(attached)
     for partition in attached: 
+        if partition["mounted"]:
+            log("Partition already mounted, not doing anything")
+            continue
         t = threading.Thread(target = process_attached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
         t.daemon = True
         t.start()
