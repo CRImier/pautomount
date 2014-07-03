@@ -155,6 +155,13 @@ def add_processed_partition_entry(part_info, rule):
     else:
         part_info["umount"] = None
     processed_partitions.append(part_info)    
+
+def remove_processed_partition_entry(part_info):
+    #When partition gets ejected, we also need to remove any signs of its existence from processed_partitions
+    global processed_partitions
+    for entry in deepcopy(processed_partitions):
+        if entry["uuid"] == part_info["uuid"]: #Checking by uuid because it's 100% working
+            processed_partitions.remove["entry"]
     
 def mark_mounted_partitions(current_entries):
     #Good source of information about mounted partitions is /etc/mtab
@@ -374,7 +381,7 @@ def main_loop():
     #Start processing every attached drive
     attached = mark_mounted_partitions(attached)
     for partition in attached: 
-        if partition["mounted"]:
+        if partition["mounted"]: #This is for ignoring partitions that have been mounted when daemon starts but aren't in processed_partition dictionary - such as root partition and other partitions in fstab
             log("Partition already mounted, not doing anything")
             continue
         t = threading.Thread(target = process_attached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
@@ -450,6 +457,7 @@ def process_detached_partition(*args, **kwargs):
                      exit_status = execute("umount "+partition["mountpoint"]+"")[0]
          else:
              continue
+    remove_processed_partition_entry(part_info)
 
 def set_output():
     """This function looks for a certain command-line option presence and sets stdout and stderr accordingly."""
