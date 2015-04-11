@@ -1,0 +1,7 @@
+[Unit]
+Description=Python Automatic Mounter
+
+[Service]
+PIDFile=/run/pautomount.pid
+ExecStart=/usr/bin/pautomount 
+Restart=on-abort
