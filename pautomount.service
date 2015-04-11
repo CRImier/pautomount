@@ -5,3 +5,6 @@ Description=Python Automatic Mounter
 PIDFile=/run/pautomount.pid
 ExecStart=/usr/bin/pautomount 
 Restart=on-abort
+
+[Install]
+WantedBy=local-fs.target
