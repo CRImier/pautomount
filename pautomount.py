@@ -12,354 +12,369 @@ import threading #For parallel partition processing
 from copy import deepcopy #For fixing a bug with copying 
 import shlex #For fstab/mtab/whatever parsing
 
-config_file = "/etc/pautomount.conf"
-#Some globals
-config = {}
-previous_partitions = []
-processed_partitions = []
-#These variables are those that affect the work of the daemon. They have default values now,
-#but those are overridden by values in the config file.
-main_mount_dir = "/media/" #Main directory for relative mountpoints in config and generating mountpoints
-default_mount_option  = "rw" #Option that is used if drive hasn't got any special options
+import logging 
 logfile = "/var/log/pautomount.log" 
-debug = False #Makes output more verbose
-super_debug = False #MORE VERBOSE!
-interval = 3 #Interval between work cycles in seconds
-noexecute = False #Forbids executing things, logs command to be executed instead
-label_char_filter = True #Filters every disk label for every non-ascii character
+level = logging.DEBUG #Log level
+if "-e" in [element.strip(" ") for element in sys.argv]: #Option to output logs to console
+    logging.basicConfig(level=level)
+else:
+    logging.basicConfig(filename=logfile,level=level)
 
-def log(data):
-    """Writes data into a logfile adding a timestamp """
-    f = open(logfile, "a")
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    f.write(timestamp+"    "+str(data)+"\n")
-    f.close()
 
-def export_globals():
-    log("Exporting globals from config file")
-    for variable in config["globals"].keys():
-        if debug:
-            log("Exporting variable "+variable+" from config")
-        globals()[variable] = config["globals"][variable]
+class Mounter():
+    """
 
-def normalize_config(config):
-    #finished
-    """Check config file's structure and contents for everything that can make the daemon fail, spits out warnings about inconsistent entries and deletes them from the daemon's dictionary"""
-    #Should there be some problems with the logfile, log to the /var/log/daemon.log
-    #Well, an empty file with curly braces should do. But Python has its own way of handling a try to get a value from a dict by a non-existent key.
-    #Precisely, it returns an exception, and to catch this, we need to wrap in try:except many blocks.
-    #I think that the most efficient way is adding the basic keys (config, exceptions, rules and default section) if they don't exist in the actual dictionary. 
-    #Checking everything else is already handled by all the other functions.
-    categories = {"globals":{}, "exceptions":[], "rules":[], "default":{}}
-    for category in categories.keys():  
-        if category not in config.keys():
-            config[category] = categories[category]
-    #Now check if logfile exists. If it doesn't, we have to create it.
-    try:
-        logfile_var = config["globals"]["logfile"]
-    except KeyError:
-        logfile_var = "/var/log/pautomount.log"
-    if not os.path.exists(logfile_var):
-        try:
-            os.touch(logfile_var)
+    """
+
+    noexecute = False #Forbids executing things, logs command to be executed instead
+    main_mount_dir = "/media/" #Main directory for relative mountpoints in config and generating mountpoints
+    default_mount_option  = "rw" #Option that is used if drive hasn't got any special options
+    threading = True #TODO
+
+    def process_attached_partition(*args, **kwargs):
+
+    def process_detached_partition(*args, **kwargs):
+
+    def mount_rule_parser(self, partition, mount_rule):
+        """Wrapper around mount(), enables 'mount list' function. Returns all the mountpoints of successful mount() calls. """
+        if type(mount_rule) != list:
+            mount_rule = [mount_rule] #We'll iterate anyway, so wrapping a single rule in a list
+        else:
+            logging.debug("Received mount list with "+len(mount_rule)+"elements")
+        mountpoints = []
+        for rule in mount_rule:
+            result = mount(partition, rule)
+            if result: 
+                mountpoints.add(result)
+        return mountpoints
+
+    def mount(self, partition, mount_rule):
+        """Mount function, wrapper around execute(). Reads the rule mount options and composes the command accordingly"""
+        #1. Checking options
+        if not mount_rule: #False disables mounting
+            return None
+        if type(mount_rule) != dict: #Must be 'mount':True
+            mount_rule = {} 
+        #Checking for defined mountpoint
+        if "mountpoint" in mount_rule.keys():
+            mountpoint = mount_rule["mountpoint"]
+            mountpoint = return_absolute_mountpoint(mountpoint)
+        else:
+            mountpoint = self.generate_mountpoint(partition)
+        #Checking for mount options
+        if "options" in mount_rule.keys(): 
+            options = mount_rule["options"]
+        else:
+            options = self.default_mount_option
+        try: #If path is not there, we need to create it.
+            self.ensure_path_exists(mountpoint)
         except:
-            logger("Logfile creation in path "+logfile_var+" not permitted. Falling back to default.")
-            logfile_var = "/var/log/daemon.log"   
-    config["globals"]["logfile"] = logfile_var
-    #OK. We have a logfile that should work. I suppose we can just redirect stderr and let all 
-    #the uncaught exception output appear there.
-    #Checks will be added to this function in case lack of check can mean something dreadful.
-    return config
+            logging.warning("Directory creation failed, path: "+mountpoint)
+            logging.warning("Mount aborted.")
+        #2. Composing and executing command
+        logging.info("Trying to mount partition "+partition["uuid"]+"  on path "+mountpoint)
+        command = "mount "+partition["path"]+" "+mountpoint+" -o "+options #TODO: options might not be provided at all
+        output = execute(command)
+        #TODO: Add UUIDs because in case of parallel mounts all the output is getting mixed up
+        if output[0] != 0:
+            logging.warning("Mount failed. Exit status: "+str(output[0])) 
+            logging.warning("Output: "+output[1])
+            return None
+        else:
+            logging.info("Partition "+partition["uuid"]+" successfully mounted")
+            return mountpoint
 
-def scan_partitions():
-    partitions = []
-    labels = {}
-    dbu_dir = "/dev/disk/by-uuid/"
-    dbl_dir = "/dev/disk/by-label/"
-    try:
-        parts_by_label = os.listdir(dbl_dir)
-    except OSError:
-        parts_by_label = [] 
-    parts_by_uuid = os.listdir(dbu_dir)
-    for label in parts_by_label:
-        #Getting the place where symlink points to - that's the needed "/dev/sd**"
-        path = os.path.realpath(os.path.join(dbl_dir, label)) 
-        label = label_filter(label)
-        if label:
-            labels[path] = label_filter(label)
-        #Makes dict like {"/dev/sda1":"label1", "/dev/sdc1":"label2"}
-    for uuid in parts_by_uuid:
-        path = os.path.realpath(os.path.join(dbu_dir, uuid))
-        details_dict = {"uuid":uuid, "path":path}
-        if path in labels.keys():
-            details_dict["label"] = labels[path]
-        partitions.append(details_dict)
-        #partitions is now something like 
-        #[{"uuid":"5OUU1DMUCHUNIQUEW0W", "path":"/dev/sda1"}, {"label":"label1", "uuid":"MANYLETTER5SUCH1ONGWOW", "path":"/dev/sdc1"}]
-    if debug:
-        log("Partitions scanned. Current number of partitions: "+str(len(partitions)))
-    return partitions
-
-def label_filter(label):
-    arr_label = [char for char in label]
-    ascii_letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ '
-    dang_chars = ["&", ";", "|", "/", "$"]
-    for char in dang_chars:
-        while char in arr_label[:]:
-            arr_label.remove(char)
-    if label_char_filter:
-        for char in arr_label[:]:
-            if char not in ascii_letters:
-                arr_label.remove(char)
-    #Now need to check if label is something reasonable =)
-    if not arr_label or len(label)/len(arr_label) <= 2: #Label after filtering is empty or more than half of label is lost after filtering
-        label = None
-    else:
-        label = "".join(arr_label)
-    return label
-
-def log_to_stdout(message):
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print timestamp+"    "+str(message)
-    
-def compare(arr1, arr2):
-    """Compares two arrays - arr1 and arr2. Returns tuple (items that lack from arr2, items that lack from arr1)"""
-    attached, detached = [item for item in arr1 if item not in arr2], [item for item in arr2 if item not in arr1]
-    return attached, detached
-
-def execute(*args):
-    """Comfortable subprocess wrapper to call external programs"""
-    if debug:
-        log("Executing: "+str(args))
-    if noexecute: 
-        log("'noexecute' turned on, not doing anything, arguments:")
-        log(str(args))
-        result = [0, ""] #Totally faking it
-    else:
-        try:
-            output = subprocess.check_output(args, stderr=subprocess.STDOUT, shell=True)
-            result = [0, output]
-        except subprocess.CalledProcessError as e:
-            result = [int(e.returncode), e.output]
-        if debug:    
-            log("Exit code: "+str(result[0])+", output: "+result[1])
-    return result
-
-def add_processed_partition_entry(part_info, rule):
-    #This function adds data to processed_partitions dictionary
-    #Useful mainly on ejects for getting knowledge which directory to `umount`
-    global processed_partitions
-    part_info = deepcopy(part_info) #Who knows, maybe this is exactly a place for a bug I've fought with before
-    if "umount" in rule.keys(): #Saving umount action for later
-        part_info["umount"] = rule["umount"]
-    else:
-        part_info["umount"] = None
-    processed_partitions.append(part_info)    
-
-def remove_processed_partition_entry(part_info):
-    #When partition gets ejected, we also need to remove any signs of its existence from processed_partitions
-    global processed_partitions
-    for entry in deepcopy(processed_partitions):
-        if entry["uuid"] == part_info["uuid"]: #Checking by uuid because it's 100% working
-            processed_partitions.remove["entry"]
-    
-def mark_mounted_partitions(current_entries):
-    #Good source of information about mounted partitions is /etc/mtab
-    file = "/etc/mtab" 
-    f = open(file, "r")
-    lines = f.readlines()
-    f.close()
-    mounted_partitions = []
-    for line in lines:
-        line = line.strip().strip("\n")
-        if line: #Empty lines? Well, who knows what happens... =)
-            elements = shlex.split(line) #Avoids splitting where space character is enclosed in ###########
-            if len(elements) != 6:
-                break
-            path = elements[0] 
-            #mtab is full of entries that aren't any kind of partitions we're interested in - that is, physical&logical partitions of disk drives
-            #That's why we need to filter entries by path
-            if path.startswith("/dev"):
-                #Seems to be a legit disk device. It's either /dev/sd** or a symlink to that. If it's a symlink, we resolve it.
-                dev_path = os.path.realpath(path)
-                mounted_partitions.append(dev_path)
-    for entry in current_entries:
-         if entry["path"] in mounted_partitions:
-             entry["mounted"] = True
-         else:
-             entry["mounted"] = False
-    return current_entries
-
-def read_config():
-    try:
-        log("Opening config file - "+config_file)
-        f = open(config_file, 'r')
-        d = json.load(f)
-        f.close()
-    except (IOError, ValueError) as e:
-        #if the config file doesn't exist - there's no need in running this daemon.
-        log("Exception while opening config file")
-        log(str(e))
-        sys.exit(1)
-    return d
-
-def complies_to_rule(partition, rule):
-    """Check if the partition parameters comply to the rule given"""
-    #This function exists because we can have many different conditions when partition parameters apply to the rule
-    #First one is when UUIDs match
-    if "uuid" in rule.keys() and partition["uuid"] == rule["uuid"]:
-        if debug:
-            log("Partition complies to UUID rule")
-        return True
-    #Latter two only apply if partition has a label
-    elif "label" in partition.keys():
-    #Second is when there's some label in the rule and it matches to the label of the partition
-        if "label" in rule.keys() and partition["label"] == rule["label"]:
-            if debug:
-                log("Partition complies to label rule")
+    def complies_to_rule(self, partition, rule):
+        """Check if the partition parameters comply to the rule given"""
+        #1. Partition and rule UUIDs match
+        if "uuid" in rule.keys() and partition["uuid"] == rule["uuid"]:
+            logging.debug("Partition complies to UUID rule")
             return True
-        #Third is when the rule has option "label-regex" 
-        #That means we take this regex, compile it and check
-        elif "label_regex" in rule.keys():
-            pattern = re.compile(rule["label_regex"])
-            if pattern.match(partition["label"]):
-                if debug:
-                    log("Partition complies to label_regex rule")
+        #2. Partition has a label
+        elif "label" in partition.keys():
+            #2.1 Rule has a label and it matches to the label of the partition
+            if "label" in rule.keys() and partition["label"] == rule["label"]:
+                logging.debug("Partition complies to label rule")
                 return True
-            else:
-                return False
-        else: #No more options to check
-            return False
-    else:
+            #2.2 Rule has an option "label-regex" and the regex provided matches the label
+            elif "label_regex" in rule.keys():
+                pattern = re.compile(rule["label_regex"])
+                if pattern.match(partition["label"]):
+                    logging.debug("Partition complies to label_regex rule")
+                    return True
+        #None options worked, partition doesn't match to rule
         return False
-	
-def mount_wrapper(partition, mount_rule):
-    """Wrapper around mount(), takes care of "mount lists" function"""
-    #Could be possibly made as a decorator...
-    if type(mount_rule) != list:
-        mount_rule = [mount_rule]
-    else:
-        log("Received mount list with "+len(mount_rule)+"elements")
-    mountpoint = None
-    for rule in mount_rule:
-        result = mount(partition, rule)
-        if not mountpoint and result: #Mountpoint is not set, result of mount() is not negative
-            #First mountpoint which is used is to be returned by mount_wrapper() as a mountpoint 
-            mountpoint = result
-    return mountpoint
 
-def mount(partition, mount_rule):
-    """Mount function, wrapper around execute()"""
-    if not mount_rule:
-        return None #Don't need to react at all
-    #log(mount_rule.keys())
-    if type(mount_rule) != dict or "mountpoint" not in mount_rule.keys():
-        mountpoint = generate_mountpoint(partition)
-    else:
-        mountpoint = mount_rule["mountpoint"]
-        mountpoint = return_absolute_mountpoint(mountpoint)
-    if type(mount_rule) != dict or "options" not in mount_rule.keys():
-        options = default_mount_option
-    else:     
-        options = mount_rule["options"]
-    try:
-        ensure_path_exists(mountpoint)
-    except:
-        log("Directory creation failed, path: "+mountpoint)
-        raise Exception #Path creation failed - throw exception...
-        #TODO - change exception type
-    #Now kiss!^W^W^W^W execute!
-    log("Trying to mount partition "+partition["uuid"]+"  on path "+mountpoint)
-    command = "mount "+partition["path"]+" "+mountpoint+" -o "+options
-    output = execute(command)
-    if output[0] != 0:
-        log("Mount failed. Exit status: "+str(output[0]))
-        log("Output: "+output[1])
-        return None
-    else:
-        log("Partition "+partition["uuid"]+" successfully mounted")
-        return mountpoint
+    def script_rule_parses(self, script_path, part_info=None):
+        """Wrapper around execute_custom_script(), enables 'script list' function."""
+        if type(script_paths) != list:
+            script_paths = list([script_paths])
+        for script in script_paths:
+            self.execute_custom_script(script, part_info=part_info)
 
-def execute_script_wrapper(script_path, part_info=None):
-    #script_path might as well be list, so we need to make a workaround here
-    if type(script_path) != list:
-        script_path = list([script_path])
-    for script in script_path:
-        execute_custom_script(script, part_info=part_info)
-
-def execute_custom_script(script_path, part_info=None):
-    """Function to execute arbitrary script - main function is to arrange arguments in a correct order"""
-    #First of all, there are two ways to call this function.
-    #If you don't supply part_info, it just calls some command without options
-    #If you supply part_info, it calls that command giving info about partition as arguments 
-    #Second occasion is handy for custom scripts
-    #Okay, we have some arguments and options
-    #Arguments are partition's block device path and uuid
-    #Options are... Mountpoint and label, for example.  Can't think of many now. 
-    if part_info:
-        device = part_info["path"]
-        uuid = part_info["uuid"]
-        if "mountpoint" in part_info.keys():
-            mountpoint = part_info["mountpoint"] #Might need to be escaped as may contain spaces and so on
+    def execute_custom_script(self, command, part_info=None):
+        """Function to execute arbitrary script - also gives arguments about partition if part_info is given"""
+        #If part_info is not supplied, it just calls the given command without options
+        #If part_info is supplied, it calls the given command with partition information as arguments 
+        if part_info:
+            #We have some arguments and options in partition information
+            #Arguments are block device path and uuid
+            #Options are mountpoint and label
+            device = part_info["path"]
+            uuid = part_info["uuid"]
+            if "mountpoint" in part_info.keys(): #TODO: multiple mountpoints
+                mountpoint = part_info["mountpoint"] #TODO: May contain traces of dangerous characters
+            else:
+                mountpoint = "None"
+            uuid = part_info["uuid"]
+            if "label" in part_info.keys():
+                label = part_info["label"] #Might need to be escaped as well
+            else:
+                label = "None"
+            #Script will be called like '/path/to/script /dev/sda1 U1U2-I3D4 /media/4GB-Flash Flashdrive'
+            command = script_path+" "+device+" "+uuid+" "+mountpoint+" "+label
         else:
-            mountpoint = "None"
-        uuid = part_info["uuid"]
+            command = script_path
+        logging.info("Calling external script: "+command)
+        output = execute(command)
+        if output[0] != 0:
+            logging.warning("Calling external script failed. Exit status: "+str(output[0]))
+            logging.warning("Output: "+output[1])
+        else:
+            logging.info("Calling external script succeeded.")
+
+    def return_absolute_mountpoint(self, path):
+        """"This function adds main_mount_dir in case the supplied path is relative."""
+        if not os.path.isabs(path): 
+            path = os.path.join(self.main_mount_dir, path)
+        return path
+
+    def ensure_path_exists(self, path):
+        if not os.path.isdir(path): 
+            logging.info("Mountpoint does not exist. Quickly fixing this...")
+            os.makedirs(path)
+        return True
+
+    def generate_mountpoint(self, part_info):
+        """Generates a valid mountpoint path for automatic mount if not specified in config or it's default action"""
+        def path_good_for_mounting(path):
+            """A helper function to determine if directory would be suitable as a mountpoint"""
+            #The directory we want to choose as mountpoint is suitable if:
+            #1) It doesn't exist, or:
+            #2) Nothing is mounted there and it's empty.
+            if not path: return False 
+            return not os.path.exists(path) or (not os.path.ismount(path) and not os.listdir(path))
+
+        #Mountpoint can be generated from 1) label 2) UUID (in order of precedence)
         if "label" in part_info.keys():
-            label = part_info["label"] #Might need to be escaped as well
+            path_from_label = os.path.join(self.main_mount_dir, part_info['label'])
         else:
-            label = "None"
-        #Script will be called like '/path/to/script /dev/sda1 U1U2-I3D4 /media/4GB-Flash Flashdrive'
-        command = script_path+" "+device+" "+uuid+" "+mountpoint+" "+label
-    else:
-        command = script_path
-    log("Calling external script: "+command)
-    output = execute(command)
-    if output[0] != 0:
-        log("Calling external script failed. Exit status: "+str(output[0]))
-        log("Output: "+output[1])
-    else:
-        log("Calling external script succeeded.")
+            path_from_label = None #Avoiding a branching bug 
+        path_from_uuid = os.path.join(self.main_mount_dir, part_info['uuid'])
 
-def return_absolute_mountpoint(path):
-    """We can specify both relative and absolute path in config file. This function adds main_mount_dir to all relative paths."""
-    if os.path.isabs(path): 
-        path = path
-    else:
-        path = os.path.join(main_mount_dir, path)
-    return path
-
-def ensure_path_exists(path):
-    if not os.path.isdir(path): 
-        log("Mountpoint does not seem to exist. Quickly fixing this...")
-        os.makedirs(path)
-    return True
-
-def generate_mountpoint(part_info):
-    """Generates a valid mountpoint path for automatic mount if not specified in config or it's default action"""
-    #We could use either label (easier and prettier)
-    #Or UUID (not pretty yet always available)
-    path_from_uuid = os.path.join(main_mount_dir, part_info['uuid'])
-    #We can tell that the directory we want to choose as mountpoint is OK if:
-    #1) It doesn't exist, or:
-    #2) Nothing is mounted there and it's empty.
-    if "label" in part_info.keys():
-        path_from_label = os.path.join(main_mount_dir, part_info['label'])
-        if not os.path.exists(path_from_label) or (not os.path.ismount(path_from_label) and not os.listdir(path_from_label)):
+        if path_good_for_mounting(path_from_label):
             log("Choosing path from label")
             return path_from_label 
-    elif not os.path.exists(path_from_uuid) or (not os.path.ismount(path_from_uuid) and not os.listdir(path_from_uuid)):
-        log("Choosing path from UUID")
-        return path_from_uuid
-    #But there could be another partition with the same UUID!
-    #CAN'T HANDLE THAT
-    #Seriously, is that even possible?
-    #Okay, I've seen some flash drives that have really short UUIDs
-    #And seen UUID collisions in my script when cloned drives
-    else:
-        counter = 1
-        while os.path.exists(path_from_uuid+"_("+str(counter)+")"):
-            counter += 1
-        return path_from_uuid+"_("+str(counter)+")"
+        elif path_good_for_mounting(path_from_uuid):
+            log("Choosing path from UUID")
+            return path_from_uuid
+        #UUID collision possible with non-proper ejectcloned drives, making a counter that is appended to the mountpoint end
+        else: #Iterating through all the folders
+            logging.warning("Possible UUID collision found (most probably device wasn't unmounted before ejection)")
+            counter = 1
+            new_uuid_path = os.path.join(self.main_mount_dir, part_info['uuid']+"_(1)")
+            while not path_good_for_mounting(new_uuid_path):
+                counter += 1
+                new_uuid_path = os.path.join(self.main_mount_dir, part_info['uuid']+"_("+str(counter)+")")
+            return new_uuid_path
+
+    def execute(self, *args):
+        """Comfortable subprocess wrapper to call external programs
+        Returns list [exit_status, stdout+stderr]"""
+        #Currently hides all the exceptions from user. Don't know if that's a good thing, will rethink it later.
+        logging.debug("Executing: "+str(args))
+        if not self.noexecute: #Noexecute parameter turns off any system interaction, allowing testing on a non-root account
+            try:
+                output = subprocess.check_output(args, stderr=subprocess.STDOUT, shell=True)
+                result = [0, output]
+            except subprocess.CalledProcessError as e:
+                result = [int(e.returncode), e.output]
+            logging.debug("Exit code: "+str(result[0])+", output: "+result[1])
+        else:
+            logging.warning("'noexecute' turned on, not doing anything, attempted command:")
+            logging.warning(str(args))
+            result = [0, ""] #Returning some results so that a function that called execute() doesn't get embarassed
+        return result
+
+
+class Scanner():
+
+    #Storage objects
+    previous_partitions = []
+    processed_partitions = []
+
+    #Configuration variables
+    interval = 3 #Interval between work cycles in seconds
+    label_char_filter = True #Filters every disk label for every non-ascii character
+    by_uuid_dir = "/dev/disk/by-uuid/"
+    by_label_dir = "/dev/disk/by-label/"
+
+
+    def scan_partitions(self):
+        partitions = []
+        labels = {}
+
+        #1. Getting available labels
+        try:
+            partitions_by_label = os.listdir(self.by_label_dir)
+        except OSError: #Directory most probably empty
+            partitions_by_label = [] #No labels available
+
+        for label in parts_by_label:
+            #Every entry in /dev/disk/by-label is a symlink pointing to a block device
+            path = os.path.realpath(os.path.join(dbl_dir, label)) 
+            label = self.label_filter(label) #Necessary because of Unicode symbols in labels and such
+            if label: #Checking because there might be nothing left after label_filter =)
+                labels[path] = label_filter(label)
+
+        # Finished getting labels.
+        #labels ~= {"/dev/sda1":"label1", "/dev/sdc1":"label2"}
+        logging.debug(str(labels))
+
+        #2. Getting UUIDs and corresponding block devices
+        partitions_by_uuid = os.listdir(self.by_uuid_dir) #Directory seems to be never empty
+
+        for uuid in parts_by_uuid:
+            #Every entry in /dev/disk/by-uuid is a symlink pointing to a block device
+            path = os.path.realpath(os.path.join(dbu_dir, uuid)) 
+            details_dict = {"uuid":uuid, "path":path}
+            if path in labels.keys():
+                details_dict["label"] = labels[path]
+            partitions.append(details_dict)
+
+        #Finished getting partition list
+        #partitions ~= [{"uuid":"5OUU1DMUCHUNIQUEW0W", "path":"/dev/sda1"}, {"label":"label1", "uuid":"MANYLETTER5SUCH1ONGWOW", "path":"/dev/sdc1"}]
+        logging.debug("Partitions scanned. Current number of partitions: "+str(len(partitions)))
+        logging.debug(partitions)
+
+        return partitions
+
+    def label_filter(self, label):
+        arr_label = [char for char in label] #Most elegant way to turn a string into an list of chars... Or not?
+        ascii_letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ '
+        dangerous_chars = ["&", ";", "|", "/", "$"]
+        for char in dangerous_chars: #Filters characters possible in UUIDs (okay, maybe not of them) that can cause malfunction when called as an argument of an external script in shell mode
+            while char in arr_label[:]:
+                arr_label.remove(char)
+        if self.label_char_filter: #Filters non-ASCII characters by default, can be changed in configuration
+            for char in arr_label[:]:
+                if char not in ascii_letters:
+                    arr_label.remove(char)
+        #Now need to check if label is good enough to be considered a proper disk label =)
+        if not arr_label or len(label)/len(arr_label) <= 2: #Label after filtering is empty or more than half of label is lost after filtering
+            label = None
+        else:
+            label = "".join(arr_label)
+        return label
+
+    def compare(self, arr1, arr2):
+        """Compares two list - arr1 and arr2. Returns tuple ([items that lack from arr2], [items that lack from arr1])"""
+        attached, detached = [item for item in arr1 if item not in arr2], [item for item in arr2 if item not in arr1]
+        return attached, detached
+
+    def add_processed_partition_entry(self, part_info, rule):
+        """This function adds data to processed_partitions list, which is used to avoid mounting partitions more than one time.
+        Can also be used when action is needed on drive eject"""
+        part_info = deepcopy(part_info) #Avoiding a bug
+        if "umount" in rule.keys(): #Saving 'umount' action contents in partition entry - maybe it'd be better to get it from config? TODO
+            part_info["umount"] = rule["umount"]
+        else:
+            part_info["umount"] = None
+        processed_partitions.append(part_info)    
+
+    def remove_processed_partition_entry(self, part_info):
+        """When partition gets ejected, we also need to remove any signs of its existence from processed_partitions"""
+        global processed_partitions
+        for entry in deepcopy(processed_partitions): #Avoiding a bug once again
+            if entry["uuid"] == part_info["uuid"]: #Checking by uuid because it always works
+                processed_partitions.remove["entry"]
+
+    def mark_mounted_partitions(self):
+        #Good source of information about mounted partitions is /etc/mtab
+        mounted_partitions = []
+        filename = "/etc/mtab" 
+
+        f = open(filename, "r")
+        lines = f.readlines()
+        f.close()
+        for line in lines:
+            line = line.strip().strip("\n")
+            if line:
+                elements = shlex.split(line) #Smart line splitting - ignores spaces in quotes
+                if len(elements) != 6: #Typical mtab line consists of 6 elements
+                    break
+                path = elements[0] 
+                #/etc/mtab is full of entries that aren't mounted block devices we would be interested in.
+                if path.startswith("/dev"): #This might also grab things like /dev/pts, but it should not be an issue. TODO why
+                    #Close enough to be disk device. It's either /dev/sd** or a symlink to that. 
+                    dev_path = os.path.realpath(path) #If it's a symlink, it will be resolved by realpath().
+                    mounted_partitions.append(dev_path)
+        #TODO - where is that dict?
+        for entry in self.current_entries:
+            if entry["path"] in mounted_partitions:
+                entry["mounted"] = True
+            else:
+                entry["mounted"] = False
+
+    def main_loop(): #TODO
+        pass
+
+class ConfigManager():
+
+    #Storage objects
+    config = {}
+
+    #Configuration variables
+    config_file = "/etc/pautomount.conf"
+
+    def export_globals(self):
+        logging.info("Exporting globals from config file")
+        for variable in config["globals"].keys():
+            logging.debug("Exporting variable "+variable+" from config")
+            globals()[variable] = config["globals"][variable]
+
+    def normalize_config(self):
+        """Check config file's structure and contents for everything that can make the daemon fail.
+        In future, warns about inconsistent entries and deletes them from the daemon's dictionary"""
+        #An empty file with curly braces should do. But Python gets angry when we use a non-existent key with the dict.
+        #Precisely, it returns an exception, and to catch this, we need to wrap in try:except many blocks.
+        #I think that the most efficient way is adding the basic keys (config, exceptions, rules and default section) if they don't exist in the actual dictionary. 
+        #Checking everything has to be handled by all the other functions.
+        categories = {"globals":{}, "exceptions":[], "rules":[], "default":{}}
+        for category in categories.keys():  
+            if category not in self.config.keys():
+                self.config[category] = categories[category]
+                logging.info("Config category "+category+"not found, assumed empty")
+        #Checks have to be added to this function in case lack of check can mean something dreadful.
+
+    def read_config(self):
+        try:
+            logging.info("Opening config file - "+self.config_file)
+            f = open(self.config_file, 'r')
+            self.config = json.load(f)
+            f.close()
+        except (IOError, ValueError) as e:
+            #if the config file doesn't exist, there's no need in running this daemon
+            logging.critical("Exception while opening config file")
+            logging.critical(str(e))
+            sys.exit(1)
+
+    def load_config(self):
+    def reload(self, signum, frame):
+
+
+#==============HERE BE DRAGONS===============
+
 
 def main_loop():
     global previous_partitions
@@ -458,18 +473,6 @@ def process_detached_partition(*args, **kwargs):
          else:
              continue
     remove_processed_partition_entry(part_info)
-
-def set_output():
-    """This function looks for a certain command-line option presence and sets stdout and stderr accordingly."""
-    global log
-    option = "-e"
-    if option in [element.strip(" ") for element in sys.argv]:
-       #Flag for debugging to make pautomount output stderr to console
-       log = log_to_stdout #Reassigns logging function
-    else:
-       f = open(logfile, "a")
-       sys.stderr = f
-       sys.stdout = f
 
 def load_config():
     global config
