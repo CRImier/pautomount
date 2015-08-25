@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+logfile = "/var/log/pautomount.log" 
+
 import time #For sleeping
 import datetime #For logging timestamps
 import os #For reading contents of directories, symlinks and similar
@@ -13,12 +15,14 @@ from copy import deepcopy #For fixing a bug with copying
 import shlex #For fstab/mtab/whatever parsing
 
 import logging 
-logfile = "/var/log/pautomount.log" 
 level = logging.DEBUG #Log level
 if "-e" in [element.strip(" ") for element in sys.argv]: #Option to output logs to console
     logging.basicConfig(level=level)
 else:
     logging.basicConfig(filename=logfile,level=level)
+
+scanner = None #Two global variables for singleton objects
+mounter = None 
 
 
 class Mounter():
@@ -207,7 +211,7 @@ class Mounter():
         return result
 
 
-class Scanner():
+class PollingScanner():
 
     #Storage objects
     previous_partitions = []
@@ -327,7 +331,35 @@ class Scanner():
                 entry["mounted"] = False
 
     def main_loop(): #TODO
-        pass
+        global previous_partitions
+        current_partitions = scan_partitions()
+        attached, detached = compare(current_partitions, previous_partitions)
+        attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
+        detached = deepcopy(detached) #Ditto
+        #We need to copy "current_partitions" into "previous_partitions" now
+        #If current_partition is modified, it may lead to attempt to reattach partition in the next step
+        previous_partitions = current_partitions
+        if attached:
+            logging.info("Found "+str(len(attached))+" attached partition(s)")
+            logging.debug(str(attached))
+        if detached:
+            logging.info("Found "+str(len(detached))+" detached partition(s)")
+            logging.debug(str(detached))
+        #Start processing every attached drive
+        attached = mark_mounted_partitions(attached) #Sets a flag on all the partitions that are already mounted
+        for partition in attached: 
+            if partition["mounted"]: #This is for ignoring partitions that have been mounted when daemon starts but aren't in processed_partition dictionary - such as root partition and other partitions in fstab
+                logging.info("Partition already mounted, not doing anything")
+                continue
+            t = threading.Thread(target = process_attached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+            t.daemon = True
+            t.start()
+        for partition in detached:
+            t = threading.Thread(target = process_detached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
+            t.daemon = True
+            t.start()
+        logging.debug("Sleeping...")
+        
 
 class ConfigManager():
 
@@ -337,11 +369,12 @@ class ConfigManager():
     #Configuration variables
     config_file = "/etc/pautomount.conf"
 
-    def export_globals(self):
+    def export_globals(self, key):
+        #TODO: exporting config entries to different modules
         logging.info("Exporting globals from config file")
-        for variable in config["globals"].keys():
+        """for variable in config["globals"].keys():
             logging.debug("Exporting variable "+variable+" from config")
-            globals()[variable] = config["globals"][variable]
+            globals()[variable] = config["globals"][variable]"""
 
     def normalize_config(self):
         """Check config file's structure and contents for everything that can make the daemon fail.
@@ -370,48 +403,32 @@ class ConfigManager():
             sys.exit(1)
 
     def load_config(self):
-    def reload(self, signum, frame):
+        self.config = read_config()
+        self.normalize_config(config)
+        #self.export_globals()
+        logging.info("Config loaded and parsed successfully")
 
+    def reload(self, signum, frame):
+        #Is just a wrapper for load_config 
+        #Just in case we will need more sophisticated signal processing 
+        logging.warning("Reloading on external signal")
+        self.load_config()
+
+if __name__ == "__main__":
+    config_manager = ConfigManager()
+    signal.signal(signal.SIGHUP, config_manager.reload) #Makes daemon reloading possible
+    config_manager.load_config()
+
+    scanner = PollingScanner(scanner_config)
+    scanner.load_config(config)    
+    mounter = Mounter(mounter_config)
+    #TODO: insert selections for different scanner types
+    while True:
+        scanner.main_loop() #Starts daemon
+        time.sleep(interval)
 
 #==============HERE BE DRAGONS===============
 
-
-def main_loop():
-    global previous_partitions
-    current_partitions = scan_partitions()
-    attached, detached = compare(current_partitions, previous_partitions)
-    attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
-    detached = deepcopy(detached) #Preventing a bug in the future
-    #We need to copy "current_partitions" into "previous_partitions" now
-    #If current_partition is modified, it may lead to attempt to reattach partition in the next step
-    previous_partitions = current_partitions
-    if attached:
-        log("Found "+str(len(attached))+" attached partition(s)")
-        if debug:
-            log(str(attached))
-    if detached:
-        log("Found "+str(len(detached))+" detached partition(s)")
-        if debug:
-            log(str(detached))
-    #Start processing every attached drive
-    attached = mark_mounted_partitions(attached)
-    for partition in attached: 
-        if partition["mounted"]: #This is for ignoring partitions that have been mounted when daemon starts but aren't in processed_partition dictionary - such as root partition and other partitions in fstab
-            log("Partition already mounted, not doing anything")
-            continue
-        t = threading.Thread(target = process_attached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
-        t.daemon = True
-        t.start()
-    for partition in detached:
-        t = threading.Thread(target = process_detached_partition, args = tuple([partition])) #tuple([]) is a fix for a problem with *args that is totally ununderstandable for me and I don't even want to dig through this shit. It doesn't accept a tuple, but accepts tuple(list). So - this fix isn't dirty, just quick =)
-        t.daemon = True
-        t.start()
-        pass
-    if super_debug:
-        log(str(current_partitions))
-    if debug:
-        log("Sleeping...")
-    pass
 
 def process_attached_partition(*args, **kwargs):
     partition = args[0]
@@ -474,25 +491,4 @@ def process_detached_partition(*args, **kwargs):
              continue
     remove_processed_partition_entry(part_info)
 
-def load_config():
-    global config
-    config = read_config()
-    config = normalize_config(config)
-    export_globals()
-    log("Config loaded and parsed successfully")
-	
-def reload(signum, frame):
-    #Is just a wrapper for load_config 
-    #Just in case we will need more sophisticated signal processing 
-    log("Reloading on external signal")
-    load_config()
-
-if __name__ == "__main__":
-    signal.signal(signal.SIGHUP, reload) #Makes daemon reloading possible
-    set_output() #Decides where to output logging messages 
-    load_config() #Manages config - loads it, cleans it up and exports globals
-    if super_debug:
-        debug = True
-    while True:
-        main_loop() #Starts daemon
-        time.sleep(interval)
+def load_config()
