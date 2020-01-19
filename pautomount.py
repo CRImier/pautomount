@@ -5,11 +5,11 @@ import datetime #For logging timestamps
 import os #For reading contents of directories, symlinks and similar
 import json #For parsing the config file
 import subprocess #For calling external programs, such as "mount"
-import signal #For reloading daemon 
+import signal #For reloading daemon
 import re #For "label-regex" option handling
 import sys #For stdout and stderr redirection
 import threading #For parallel partition processing
-from copy import deepcopy #For fixing a bug with copying 
+from copy import deepcopy #For fixing a bug with copying
 import shlex #For fstab/mtab/whatever parsing
 
 import pyrtitions
@@ -23,7 +23,7 @@ processed_partitions = []
 #but those are overridden by values in the config file.
 main_mount_dir = "/media/" #Main directory for relative mountpoints in config and generating mountpoints
 default_mount_option  = "rw" #Option that is used if drive hasn't got any special options
-logfile = "/var/log/pautomount.log" 
+logfile = "/var/log/pautomount.log"
 debug = False #Makes output more verbose
 super_debug = False #MORE VERBOSE!
 interval = 3 #Interval between work cycles in seconds
@@ -50,10 +50,10 @@ def normalize_config(config):
     #Should there be some problems with the logfile, log to the /var/log/daemon.log
     #Well, an empty file with curly braces should do. But Python has its own way of handling a try to get a value from a dict by a non-existent key.
     #Precisely, it returns an exception, and to catch this, we need to wrap in try:except many blocks.
-    #I think that the most efficient way is adding the basic keys (config, exceptions, rules and default section) if they don't exist in the actual dictionary. 
+    #I think that the most efficient way is adding the basic keys (config, exceptions, rules and default section) if they don't exist in the actual dictionary.
     #Checking everything else is already handled by all the other functions.
     categories = {"globals":{}, "exceptions":[], "rules":[], "default":{}}
-    for category in categories.keys():  
+    for category in categories.keys():
         if category not in config.keys():
             config[category] = categories[category]
     #Now check if logfile exists. If it doesn't, we have to create it.
@@ -66,17 +66,17 @@ def normalize_config(config):
             os.touch(logfile_var)
         except:
             logger("Logfile creation in path "+logfile_var+" not permitted. Falling back to default.")
-            logfile_var = "/var/log/daemon.log"   
+            logfile_var = "/var/log/daemon.log"
     config["globals"]["logfile"] = logfile_var
-    #OK. We have a logfile that should work. I suppose we can just redirect stderr and let all 
+    #OK. We have a logfile that should work. I suppose we can just redirect stderr and let all
     #the uncaught exception output appear there.
     #Checks will be added to this function in case lack of check can mean something dreadful.
     return config
 
 def log_to_stdout(message):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print timestamp+"    "+str(message)
-    
+    print(timestamp+"    "+str(message))
+
 def compare(arr1, arr2):
     """Compares two arrays - arr1 and arr2. Returns tuple (items that lack from arr2, items that lack from arr1)"""
     attached, detached = [item for item in arr1 if item not in arr2], [item for item in arr2 if item not in arr1]
@@ -86,7 +86,7 @@ def execute(*args):
     """Comfortable subprocess wrapper to call external programs"""
     if debug:
         log("Executing: "+str(args))
-    if noexecute: 
+    if noexecute:
         log("'noexecute' turned on, not doing anything, arguments:")
         log(str(args))
         result = [0, ""] #Totally faking it
@@ -96,7 +96,7 @@ def execute(*args):
             result = [0, output]
         except subprocess.CalledProcessError as e:
             result = [int(e.returncode), e.output]
-        if debug:    
+        if debug:
             log("Exit code: "+str(result[0])+", output: "+result[1])
     return result
 
@@ -109,7 +109,7 @@ def add_processed_partition_entry(part_info, rule):
         part_info["umount"] = rule["umount"]
     else:
         part_info["umount"] = None
-    processed_partitions.append(part_info)    
+    processed_partitions.append(part_info)
 
 def remove_processed_partition_entry(part_info):
     #When partition gets ejected, we also need to remove any signs of its existence from processed_partitions
@@ -156,7 +156,7 @@ def complies_to_rule(partition, rule):
             if debug:
                 log("Partition complies to label rule")
             return True
-        #Third is when the rule has option "label-regex" 
+        #Third is when the rule has option "label-regex"
         #That means we take this regex, compile it and check
         elif "label_regex" in rule.keys():
             pattern = re.compile(rule["label_regex"])
@@ -170,7 +170,7 @@ def complies_to_rule(partition, rule):
             return False
     else:
         return False
-	
+
 def mount_wrapper(partition, mount_rule):
     """Wrapper around mount(), takes care of "mount lists" function"""
     #Could be possibly made as a decorator...
@@ -182,7 +182,7 @@ def mount_wrapper(partition, mount_rule):
     for rule in mount_rule:
         result = mount(partition, rule)
         if not mountpoint and result: #Mountpoint is not set, result of mount() is not negative
-            #First mountpoint which is used is to be returned by mount_wrapper() as a mountpoint 
+            #First mountpoint which is used is to be returned by mount_wrapper() as a mountpoint
             mountpoint = result
     return mountpoint
 
@@ -198,7 +198,7 @@ def mount(partition, mount_rule):
         mountpoint = return_absolute_mountpoint(mountpoint)
     if type(mount_rule) != dict or "options" not in mount_rule.keys():
         options = default_mount_option
-    else:     
+    else:
         options = mount_rule["options"]
     try:
         ensure_path_exists(mountpoint)
@@ -229,11 +229,11 @@ def execute_custom_script(script_path, part_info=None):
     """Function to execute arbitrary script - main function is to arrange arguments in a correct order"""
     #First of all, there are two ways to call this function.
     #If you don't supply part_info, it just calls some command without options
-    #If you supply part_info, it calls that command giving info about partition as arguments 
+    #If you supply part_info, it calls that command giving info about partition as arguments
     #Second occasion is handy for custom scripts
     #Okay, we have some arguments and options
     #Arguments are partition's block device path and uuid
-    #Options are... Mountpoint and label, for example.  Can't think of many now. 
+    #Options are... Mountpoint and label, for example.  Can't think of many now.
     if part_info:
         device = part_info["path"]
         uuid = part_info["uuid"]
@@ -260,14 +260,14 @@ def execute_custom_script(script_path, part_info=None):
 
 def return_absolute_mountpoint(path):
     """We can specify both relative and absolute path in config file. This function adds main_mount_dir to all relative paths."""
-    if os.path.isabs(path): 
+    if os.path.isabs(path):
         path = path
     else:
         path = os.path.join(main_mount_dir, path)
     return path
 
 def ensure_path_exists(path):
-    if not os.path.isdir(path): 
+    if not os.path.isdir(path):
         log("Mountpoint does not seem to exist. Quickly fixing this...")
         os.makedirs(path)
     return True
@@ -291,7 +291,7 @@ def main_loop():
             log(str(detached))
     #Start processing every attached drive
     attached = mark_mounted_partitions(attached)
-    for partition in attached: 
+    for partition in attached:
         if partition["mounted"]: #This is for ignoring partitions that have been mounted when daemon starts but aren't in processed_partition dictionary - such as root partition and other partitions in fstab
             log("Partition already mounted, not doing anything")
             continue
@@ -312,7 +312,7 @@ def main_loop():
 def process_attached_partition(*args, **kwargs):
     partition = args[0]
     log("Processing attached drive with UUID "+partition["uuid"])
-    action_taken = False 
+    action_taken = False
     for exception in config["exceptions"]:
         if complies_to_rule(partition, exception):
             #Well, we don't need to do anything
@@ -388,16 +388,16 @@ def load_config():
     config = normalize_config(config)
     export_globals()
     log("Config loaded and parsed successfully")
-	
+
 def reload(signum, frame):
-    #Is just a wrapper for load_config 
-    #Just in case we will need more sophisticated signal processing 
+    #Is just a wrapper for load_config
+    #Just in case we will need more sophisticated signal processing
     log("Reloading on external signal")
     load_config()
 
 if __name__ == "__main__":
     signal.signal(signal.SIGHUP, reload) #Makes daemon reloading possible
-    set_output() #Decides where to output logging messages 
+    set_output() #Decides where to output logging messages
     load_config() #Manages config - loads it, cleans it up and exports globals
     if super_debug:
         debug = True
