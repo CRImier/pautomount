@@ -116,8 +116,8 @@ def remove_processed_partition_entry(part_info):
     global processed_partitions
     for entry in deepcopy(processed_partitions):
         if entry["uuid"] == part_info["uuid"]: #Checking by uuid because it's 100% working
-            processed_partitions.remove["entry"]
-    
+            processed_partitions.remove(entry)
+
 def filter_virtual_devices(current_entries):
     virtual_devices = pyrtitions.get_virtual_devices()
     return [entry for entry in current_entries if os.path.basename(entry["path"]) not in virtual_devices]
@@ -369,7 +369,7 @@ def process_detached_partition(*args, **kwargs):
              if "mountpoint" in partition.keys() and partition["mountpoint"]:
                  #Unmounting the mountpoint where device was mounted - just in case
                  exit_status = 0
-                 while exit_status == 0:
+                 while exit_status != 0:
                      exit_status = execute("umount "+partition["mountpoint"]+"")[0]
          else:
              continue
