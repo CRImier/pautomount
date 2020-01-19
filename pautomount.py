@@ -118,6 +118,10 @@ def remove_processed_partition_entry(part_info):
         if entry["uuid"] == part_info["uuid"]: #Checking by uuid because it's 100% working
             processed_partitions.remove["entry"]
     
+def filter_virtual_devices(current_entries):
+    virtual_devices = pyrtitions.get_virtual_devices()
+    return [entry for entry in current_entries if os.path.basename(entry["path"]) not in virtual_devices]
+
 def mark_mounted_partitions(current_entries):
     mounted_partitions = pyrtitions.get_mounts()
     mounted_devices = list(mounted_partitions.keys())
@@ -275,6 +279,7 @@ def ensure_path_exists(path):
 def main_loop():
     global previous_partitions
     current_partitions = pyrtitions.get_uuids_and_labels()
+    current_partitions = filter_virtual_devices(current_partitions)
     attached, detached = compare(current_partitions, previous_partitions)
     attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
     detached = deepcopy(detached) #Preventing a bug in the future
