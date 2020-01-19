@@ -14,6 +14,8 @@ import shlex #For fstab/mtab/whatever parsing
 
 import pyrtitions
 
+__version__ = "1.0.0"
+
 config_file = "/etc/pautomount.conf"
 #Some globals
 config = {}
@@ -400,7 +402,7 @@ def reload(signum, frame):
     log("Reloading on external signal")
     load_config()
 
-if __name__ == "__main__":
+def main():
     signal.signal(signal.SIGHUP, reload) #Makes daemon reloading possible
     set_output() #Decides where to output logging messages
     load_config() #Manages config - loads it, cleans it up and exports globals
@@ -409,3 +411,6 @@ if __name__ == "__main__":
     while True:
         main_loop() #Starts daemon
         time.sleep(interval)
+
+if __name__ == "__main__":
+    main()
