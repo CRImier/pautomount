@@ -12,6 +12,8 @@ import threading #For parallel partition processing
 from copy import deepcopy #For fixing a bug with copying 
 import shlex #For fstab/mtab/whatever parsing
 
+import pyrtitions
+
 config_file = "/etc/pautomount.conf"
 #Some globals
 config = {}
@@ -71,53 +73,6 @@ def normalize_config(config):
     #Checks will be added to this function in case lack of check can mean something dreadful.
     return config
 
-def scan_partitions():
-    partitions = []
-    labels = {}
-    dbu_dir = "/dev/disk/by-uuid/"
-    dbl_dir = "/dev/disk/by-label/"
-    try:
-        parts_by_label = os.listdir(dbl_dir)
-    except OSError:
-        parts_by_label = [] 
-    parts_by_uuid = os.listdir(dbu_dir)
-    for label in parts_by_label:
-        #Getting the place where symlink points to - that's the needed "/dev/sd**"
-        path = os.path.realpath(os.path.join(dbl_dir, label)) 
-        label = label_filter(label)
-        if label:
-            labels[path] = label_filter(label)
-        #Makes dict like {"/dev/sda1":"label1", "/dev/sdc1":"label2"}
-    for uuid in parts_by_uuid:
-        path = os.path.realpath(os.path.join(dbu_dir, uuid))
-        details_dict = {"uuid":uuid, "path":path}
-        if path in labels.keys():
-            details_dict["label"] = labels[path]
-        partitions.append(details_dict)
-        #partitions is now something like 
-        #[{"uuid":"5OUU1DMUCHUNIQUEW0W", "path":"/dev/sda1"}, {"label":"label1", "uuid":"MANYLETTER5SUCH1ONGWOW", "path":"/dev/sdc1"}]
-    if debug:
-        log("Partitions scanned. Current number of partitions: "+str(len(partitions)))
-    return partitions
-
-def label_filter(label):
-    arr_label = [char for char in label]
-    ascii_letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ '
-    dang_chars = ["&", ";", "|", "/", "$"]
-    for char in dang_chars:
-        while char in arr_label[:]:
-            arr_label.remove(char)
-    if label_char_filter:
-        for char in arr_label[:]:
-            if char not in ascii_letters:
-                arr_label.remove(char)
-    #Now need to check if label is something reasonable =)
-    if not arr_label or len(label)/len(arr_label) <= 2: #Label after filtering is empty or more than half of label is lost after filtering
-        label = None
-    else:
-        label = "".join(arr_label)
-    return label
-
 def log_to_stdout(message):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print timestamp+"    "+str(message)
@@ -164,27 +119,10 @@ def remove_processed_partition_entry(part_info):
             processed_partitions.remove["entry"]
     
 def mark_mounted_partitions(current_entries):
-    #Good source of information about mounted partitions is /etc/mtab
-    file = "/etc/mtab" 
-    f = open(file, "r")
-    lines = f.readlines()
-    f.close()
-    mounted_partitions = []
-    for line in lines:
-        line = line.strip().strip("\n")
-        if line: #Empty lines? Well, who knows what happens... =)
-            elements = shlex.split(line) #Avoids splitting where space character is enclosed in ###########
-            if len(elements) != 6:
-                break
-            path = elements[0] 
-            #mtab is full of entries that aren't any kind of partitions we're interested in - that is, physical&logical partitions of disk drives
-            #That's why we need to filter entries by path
-            if path.startswith("/dev"):
-                #Seems to be a legit disk device. It's either /dev/sd** or a symlink to that. If it's a symlink, we resolve it.
-                dev_path = os.path.realpath(path)
-                mounted_partitions.append(dev_path)
+    mounted_partitions = pyrtitions.get_mounts()
+    mounted_devices = list(mounted_partitions.keys())
     for entry in current_entries:
-         if entry["path"] in mounted_partitions:
+         if entry["path"] in mounted_devices:
              entry["mounted"] = True
          else:
              entry["mounted"] = False
@@ -254,7 +192,7 @@ def mount(partition, mount_rule):
         return None #Don't need to react at all
     #log(mount_rule.keys())
     if type(mount_rule) != dict or "mountpoint" not in mount_rule.keys():
-        mountpoint = generate_mountpoint(partition)
+        mountpoint = pyrtitions.generate_mountpoint(partition)
     else:
         mountpoint = mount_rule["mountpoint"]
         mountpoint = return_absolute_mountpoint(mountpoint)
@@ -334,36 +272,9 @@ def ensure_path_exists(path):
         os.makedirs(path)
     return True
 
-def generate_mountpoint(part_info):
-    """Generates a valid mountpoint path for automatic mount if not specified in config or it's default action"""
-    #We could use either label (easier and prettier)
-    #Or UUID (not pretty yet always available)
-    path_from_uuid = os.path.join(main_mount_dir, part_info['uuid'])
-    #We can tell that the directory we want to choose as mountpoint is OK if:
-    #1) It doesn't exist, or:
-    #2) Nothing is mounted there and it's empty.
-    if "label" in part_info.keys():
-        path_from_label = os.path.join(main_mount_dir, part_info['label'])
-        if not os.path.exists(path_from_label) or (not os.path.ismount(path_from_label) and not os.listdir(path_from_label)):
-            log("Choosing path from label")
-            return path_from_label 
-    elif not os.path.exists(path_from_uuid) or (not os.path.ismount(path_from_uuid) and not os.listdir(path_from_uuid)):
-        log("Choosing path from UUID")
-        return path_from_uuid
-    #But there could be another partition with the same UUID!
-    #CAN'T HANDLE THAT
-    #Seriously, is that even possible?
-    #Okay, I've seen some flash drives that have really short UUIDs
-    #And seen UUID collisions in my script when cloned drives
-    else:
-        counter = 1
-        while os.path.exists(path_from_uuid+"_("+str(counter)+")"):
-            counter += 1
-        return path_from_uuid+"_("+str(counter)+")"
-
 def main_loop():
     global previous_partitions
-    current_partitions = scan_partitions()
+    current_partitions = pyrtitions.get_uuids_and_labels()
     attached, detached = compare(current_partitions, previous_partitions)
     attached = deepcopy(attached) #Fixing a bug with compare() when modifying elements in attached() led to previous_partitions being modified
     detached = deepcopy(detached) #Preventing a bug in the future
